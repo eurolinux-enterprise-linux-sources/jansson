@@ -1,6 +1,6 @@
 Name:		jansson
 Version:	2.4
-Release:	2%{?dist}
+Release:	6%{?dist}
 Summary:	C library for encoding, decoding and manipulating JSON data
 
 Group:		System Environment/Libraries
@@ -10,6 +10,9 @@ Source0:	http://www.digip.org/jansson/releases/jansson-%{version}.tar.bz2
 BuildRoot:  %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 BuildRequires: python-sphinx
+BuildRequires: libtool
+
+Patch0: 0001-Change-hash-function-randomize-hashes.patch
 
 %description
 Small library for parsing and writing JSON documents.
@@ -23,8 +26,17 @@ Requires: pkgconfig
 %description devel
 Header files for developing applications making use of jansson.
 
+%package devel-doc
+Summary: Development documentation for jansson
+BuildArch: noarch
+
+%description devel-doc
+Development documentation for jansson.
+
 %prep
 %setup -q
+%patch0 -p1 -b .change_hash_function_randomize_hashes
+autoreconf -i
 
 %build
 %configure --disable-static
@@ -53,12 +65,26 @@ rm -rf "$RPM_BUILD_ROOT"
 
 %files devel
 %defattr(-,root,root,-)
-%doc doc/_build/html/*
 %{_libdir}/*.so
 %{_libdir}/pkgconfig/%{name}.pc
 %{_includedir}/*
 
+%files devel-doc
+%doc doc/_build/html/*
+
 %changelog
+* Fri Mar 14 2014 Jiri Pirko <jpirko@redhat.com> 2.4-6
+- Fix multilib conflicts by creating devel-doc package [1076415]
+
+* Thu Feb 13 2014 Jiri Pirko <jpirko@redhat.com> 2.4-5
+- Change hash function, randomize hashes [1063831]
+
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 2.4-4
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 2.4-3
+- Mass rebuild 2013-12-27
+
 * Thu Feb 14 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 2.4-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_19_Mass_Rebuild
 
