@@ -1,14 +1,15 @@
 Name:		jansson
-Version:	2.10
-Release:	1%{?dist}
+Version:	2.4
+Release:	2%{?dist}
 Summary:	C library for encoding, decoding and manipulating JSON data
 
 Group:		System Environment/Libraries
 License:	MIT
 URL:		http://www.digip.org/jansson/
 Source0:	http://www.digip.org/jansson/releases/jansson-%{version}.tar.bz2
+BuildRoot:  %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
-BuildRequires:	python-sphinx
+BuildRequires: python-sphinx
 
 %description
 Small library for parsing and writing JSON documents.
@@ -16,24 +17,14 @@ Small library for parsing and writing JSON documents.
 %package devel
 Summary: Header files for jansson
 Group: Development/Libraries
-Requires: %{name}%{?_isa} = %{version}-%{release}
+Requires: %{name} = %{version}-%{release}
+Requires: pkgconfig
 
 %description devel
 Header files for developing applications making use of jansson.
 
-%package devel-doc
-Summary: Development documentation for jansson
-BuildArch: noarch
-
-%description devel-doc
-Development documentation for jansson.
-
 %prep
 %setup -q
-
-%if 0%{?rhel} == 6
-%{__sed} -i 's/code-block:: shell/code-block:: none/g' doc/*.rst
-%endif
 
 %build
 %configure --disable-static
@@ -44,42 +35,30 @@ make html
 make check
 
 %install
+rm -rf "$RPM_BUILD_ROOT"
 make install INSTALL="install -p" DESTDIR="$RPM_BUILD_ROOT"
 rm "$RPM_BUILD_ROOT%{_libdir}"/*.la
+
+%clean
+rm -rf "$RPM_BUILD_ROOT"
 
 %post -p /sbin/ldconfig
 
 %postun -p /sbin/ldconfig
 
 %files
+%defattr(-,root,root,-)
 %doc LICENSE CHANGES
 %{_libdir}/*.so.*
 
 %files devel
+%defattr(-,root,root,-)
+%doc doc/_build/html/*
 %{_libdir}/*.so
 %{_libdir}/pkgconfig/%{name}.pc
 %{_includedir}/*
 
-%files devel-doc
-%doc doc/_build/html/*
-
 %changelog
-* Fri Mar 10 2017 Nathaniel McCallum <npmccallum@redhat.com> - 2.10-1
-- Update to 2.10 [1389805]
-- Merge spec file with Fedora
-
-* Fri Mar 14 2014 Jiri Pirko <jpirko@redhat.com> 2.4-6
-- Fix multilib conflicts by creating devel-doc package [1076415]
-
-* Thu Feb 13 2014 Jiri Pirko <jpirko@redhat.com> 2.4-5
-- Change hash function, randomize hashes [1063831]
-
-* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 2.4-4
-- Mass rebuild 2014-01-24
-
-* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 2.4-3
-- Mass rebuild 2013-12-27
-
 * Thu Feb 14 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 2.4-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_19_Mass_Rebuild
 

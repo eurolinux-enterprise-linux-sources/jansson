@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2016 Petri Lehtinen <petri@digip.org>
+ * Copyright (c) 2009-2012 Petri Lehtinen <petri@digip.org>
  * Copyright (c) 2011-2012 Graeme Smecher <graeme.smecher@mail.mcgill.ca>
  *
  * Jansson is free software; you can redistribute it and/or modify
@@ -12,28 +12,16 @@
 #include "utf.h"
 
 typedef struct {
-    int line;
-    int column;
-    size_t pos;
-    char token;
-} token_t;
-
-typedef struct {
     const char *start;
     const char *fmt;
-    token_t prev_token;
-    token_t token;
-    token_t next_token;
+    char token;
     json_error_t *error;
     size_t flags;
     int line;
     int column;
-    size_t pos;
 } scanner_t;
 
-#define token(scanner) ((scanner)->token.token)
-
-static const char * const type_names[] = {
+static const char *type_names[] = {
     "object",
     "array",
     "string",
@@ -46,7 +34,8 @@ static const char * const type_names[] = {
 
 #define type_name(x) type_names[json_typeof(x)]
 
-static const char unpack_value_starters[] = "{[siIbfFOon";
+static const char *unpack_value_starters = "{[siIbfFOon";
+
 
 static void scanner_init(scanner_t *s, json_error_t *error,
                          size_t flags, const char *fmt)
@@ -54,28 +43,14 @@ static void scanner_init(scanner_t *s, json_error_t *error,
     s->error = error;
     s->flags = flags;
     s->fmt = s->start = fmt;
-    memset(&s->prev_token, 0, sizeof(token_t));
-    memset(&s->token, 0, sizeof(token_t));
-    memset(&s->next_token, 0, sizeof(token_t));
     s->line = 1;
     s->column = 0;
-    s->pos = 0;
 }
 
 static void next_token(scanner_t *s)
 {
-    const char *t;
-    s->prev_token = s->token;
-
-    if(s->next_token.line) {
-        s->token = s->next_token;
-        s->next_token.line = 0;
-        return;
-    }
-
-    t = s->fmt;
+    const char *t = s->fmt;
     s->column++;
-    s->pos++;
 
     /* skip space and ignored chars */
     while(*t == ' ' || *t == '\t' || *t == '\n' || *t == ',' || *t == ':') {
@@ -86,32 +61,23 @@ static void next_token(scanner_t *s)
         else
             s->column++;
 
-        s->pos++;
         t++;
     }
 
-    s->token.token = *t;
-    s->token.line = s->line;
-    s->token.column = s->column;
-    s->token.pos = s->pos;
+    s->token = *t;
 
     t++;
     s->fmt = t;
 }
 
-static void prev_token(scanner_t *s)
-{
-    s->next_token = s->token;
-    s->token = s->prev_token;
-}
-
 static void set_error(scanner_t *s, const char *source, const char *fmt, ...)
 {
     va_list ap;
+    size_t pos;
     va_start(ap, fmt);
 
-    jsonp_error_vset(s->error, s->token.line, s->token.column, s->token.pos,
-                     fmt, ap);
+    pos = (size_t)(s->fmt - s->start);
+    jsonp_error_vset(s->error, s->line, s->column, pos, fmt, ap);
 
     jsonp_error_set_source(s->error, source);
 
@@ -120,134 +86,46 @@ static void set_error(scanner_t *s, const char *source, const char *fmt, ...)
 
 static json_t *pack(scanner_t *s, va_list *ap);
 
-
-/* ours will be set to 1 if jsonp_free() must be called for the result
-   afterwards */
-static char *read_string(scanner_t *s, va_list *ap,
-                         const char *purpose, size_t *out_len, int *ours)
-{
-    char t;
-    strbuffer_t strbuff;
-    const char *str;
-    size_t length;
-
-    next_token(s);
-    t = token(s);
-    prev_token(s);
-
-    if(t != '#' && t != '%' && t != '+') {
-        /* Optimize the simple case */
-        str = va_arg(*ap, const char *);
-
-        if(!str) {
-            set_error(s, "<args>", "NULL string argument");
-            return NULL;
-        }
-
-        length = strlen(str);
-
-        if(!utf8_check_string(str, length)) {
-            set_error(s, "<args>", "Invalid UTF-8 %s", purpose);
-            return NULL;
-        }
-
-        *out_len = length;
-        *ours = 0;
-        return (char *)str;
-    }
-
-    strbuffer_init(&strbuff);
-
-    while(1) {
-        str = va_arg(*ap, const char *);
-        if(!str) {
-            set_error(s, "<args>", "NULL string argument");
-            strbuffer_close(&strbuff);
-            return NULL;
-        }
-
-        next_token(s);
-
-        if(token(s) == '#') {
-            length = va_arg(*ap, int);
-        }
-        else if(token(s) == '%') {
-            length = va_arg(*ap, size_t);
-        }
-        else {
-            prev_token(s);
-            length = strlen(str);
-        }
-
-        if(strbuffer_append_bytes(&strbuff, str, length) == -1) {
-            set_error(s, "<internal>", "Out of memory");
-            strbuffer_close(&strbuff);
-            return NULL;
-        }
-
-        next_token(s);
-        if(token(s) != '+') {
-            prev_token(s);
-            break;
-        }
-    }
-
-    if(!utf8_check_string(strbuff.value, strbuff.length)) {
-        set_error(s, "<args>", "Invalid UTF-8 %s", purpose);
-        strbuffer_close(&strbuff);
-        return NULL;
-    }
-
-    *out_len = strbuff.length;
-    *ours = 1;
-    return strbuffer_steal_value(&strbuff);
-}
-
 static json_t *pack_object(scanner_t *s, va_list *ap)
 {
     json_t *object = json_object();
     next_token(s);
 
-    while(token(s) != '}') {
-        char *key;
-        size_t len;
-        int ours;
+    while(s->token != '}') {
+        const char *key;
         json_t *value;
 
-        if(!token(s)) {
+        if(!s->token) {
             set_error(s, "<format>", "Unexpected end of format string");
             goto error;
         }
 
-        if(token(s) != 's') {
-            set_error(s, "<format>", "Expected format 's', got '%c'", token(s));
+        if(s->token != 's') {
+            set_error(s, "<format>", "Expected format 's', got '%c'", s->token);
             goto error;
         }
 
-        key = read_string(s, ap, "object key", &len, &ours);
-        if(!key)
+        key = va_arg(*ap, const char *);
+        if(!key) {
+            set_error(s, "<args>", "NULL object key");
             goto error;
+        }
+
+        if(!utf8_check_string(key, -1)) {
+            set_error(s, "<args>", "Invalid UTF-8 in object key");
+            goto error;
+        }
 
         next_token(s);
 
         value = pack(s, ap);
-        if(!value) {
-            if(ours)
-                jsonp_free(key);
-
+        if(!value)
             goto error;
-        }
 
         if(json_object_set_new_nocheck(object, key, value)) {
             set_error(s, "<internal>", "Unable to add key \"%s\"", key);
-            if(ours)
-                jsonp_free(key);
-
             goto error;
         }
-
-        if(ours)
-            jsonp_free(key);
 
         next_token(s);
     }
@@ -264,10 +142,10 @@ static json_t *pack_array(scanner_t *s, va_list *ap)
     json_t *array = json_array();
     next_token(s);
 
-    while(token(s) != ']') {
+    while(s->token != ']') {
         json_t *value;
 
-        if(!token(s)) {
+        if(!s->token) {
             set_error(s, "<format>", "Unexpected end of format string");
             goto error;
         }
@@ -290,31 +168,9 @@ error:
     return NULL;
 }
 
-static json_t *pack_string(scanner_t *s, va_list *ap)
-{
-    char *str;
-    size_t len;
-    int ours;
-    int nullable;
-
-    next_token(s);
-    nullable = token(s) == '?';
-    if (!nullable)
-        prev_token(s);
-
-    str = read_string(s, ap, "string", &len, &ours);
-    if (!str) {
-        return nullable ? json_null() : NULL;
-    } else if (ours) {
-        return jsonp_stringn_nocheck_own(str, len);
-    } else {
-        return json_stringn_nocheck(str, len);
-    }
-}
-
 static json_t *pack(scanner_t *s, va_list *ap)
 {
-    switch(token(s)) {
+    switch(s->token) {
         case '{':
             return pack_object(s, ap);
 
@@ -322,7 +178,18 @@ static json_t *pack(scanner_t *s, va_list *ap)
             return pack_array(s, ap);
 
         case 's': /* string */
-            return pack_string(s, ap);
+        {
+            const char *str = va_arg(*ap, const char *);
+            if(!str) {
+                set_error(s, "<args>", "NULL string argument");
+                return NULL;
+            }
+            if(!utf8_check_string(str, -1)) {
+                set_error(s, "<args>", "Invalid UTF-8 string");
+                return NULL;
+            }
+            return json_string_nocheck(str);
+        }
 
         case 'n': /* null */
             return json_null();
@@ -340,44 +207,14 @@ static json_t *pack(scanner_t *s, va_list *ap)
             return json_real(va_arg(*ap, double));
 
         case 'O': /* a json_t object; increments refcount */
-        {
-            int nullable;
-            json_t *json;
-
-            next_token(s);
-            nullable = token(s) == '?';
-            if (!nullable)
-                prev_token(s);
-
-            json = va_arg(*ap, json_t *);
-            if (!json && nullable) {
-                return json_null();
-            } else {
-                return json_incref(json);
-            }
-        }
+            return json_incref(va_arg(*ap, json_t *));
 
         case 'o': /* a json_t object; doesn't increment refcount */
-        {
-            int nullable;
-            json_t *json;
-
-            next_token(s);
-            nullable = token(s) == '?';
-            if (!nullable)
-                prev_token(s);
-
-            json = va_arg(*ap, json_t *);
-            if (!json && nullable) {
-                return json_null();
-            } else {
-                return json;
-            }
-        }
+            return va_arg(*ap, json_t *);
 
         default:
             set_error(s, "<format>", "Unexpected format character '%c'",
-                      token(s));
+                      s->token);
             return NULL;
     }
 }
@@ -388,7 +225,6 @@ static int unpack_object(scanner_t *s, json_t *root, va_list *ap)
 {
     int ret = -1;
     int strict = 0;
-    int gotopt = 0;
 
     /* Use a set (emulated by a hashtable) to check that all object
        keys are accessed. Checking that the correct number of keys
@@ -409,30 +245,30 @@ static int unpack_object(scanner_t *s, json_t *root, va_list *ap)
     }
     next_token(s);
 
-    while(token(s) != '}') {
+    while(s->token != '}') {
         const char *key;
         json_t *value;
         int opt = 0;
 
         if(strict != 0) {
             set_error(s, "<format>", "Expected '}' after '%c', got '%c'",
-                      (strict == 1 ? '!' : '*'), token(s));
+                      (strict == 1 ? '!' : '*'), s->token);
             goto out;
         }
 
-        if(!token(s)) {
+        if(!s->token) {
             set_error(s, "<format>", "Unexpected end of format string");
             goto out;
         }
 
-        if(token(s) == '!' || token(s) == '*') {
-            strict = (token(s) == '!' ? 1 : -1);
+        if(s->token == '!' || s->token == '*') {
+            strict = (s->token == '!' ? 1 : -1);
             next_token(s);
             continue;
         }
 
-        if(token(s) != 's') {
-            set_error(s, "<format>", "Expected format 's', got '%c'", token(s));
+        if(s->token != 's') {
+            set_error(s, "<format>", "Expected format 's', got '%c'", s->token);
             goto out;
         }
 
@@ -444,8 +280,8 @@ static int unpack_object(scanner_t *s, json_t *root, va_list *ap)
 
         next_token(s);
 
-        if(token(s) == '?') {
-            opt = gotopt = 1;
+        if(s->token == '?') {
+            opt = 1;
             next_token(s);
         }
 
@@ -464,61 +300,17 @@ static int unpack_object(scanner_t *s, json_t *root, va_list *ap)
         if(unpack(s, value, ap))
             goto out;
 
-        hashtable_set(&key_set, key, json_null());
+        hashtable_set(&key_set, key, 0, json_null());
         next_token(s);
     }
 
     if(strict == 0 && (s->flags & JSON_STRICT))
         strict = 1;
 
-    if(root && strict == 1) {
-        /* We need to check that all non optional items have been parsed */
-        const char *key;
-        int have_unrecognized_keys = 0;
-        strbuffer_t unrecognized_keys;
-        json_t *value;
-        long unpacked = 0;
-        if (gotopt) {
-            /* We have optional keys, we need to iter on each key */
-            json_object_foreach(root, key, value) {
-                if(!hashtable_get(&key_set, key)) {
-                    unpacked++;
-
-                    /* Save unrecognized keys for the error message */
-                    if (!have_unrecognized_keys) {
-                        strbuffer_init(&unrecognized_keys);
-                        have_unrecognized_keys = 1;
-                    } else {
-                        strbuffer_append_bytes(&unrecognized_keys, ", ", 2);
-                    }
-                    strbuffer_append_bytes(&unrecognized_keys, key, strlen(key));
-                }
-            }
-        } else {
-            /* No optional keys, we can just compare the number of items */
-            unpacked = (long)json_object_size(root) - (long)key_set.size;
-        }
-        if (unpacked) {
-            if (!gotopt) {
-                /* Save unrecognized keys for the error message */
-                json_object_foreach(root, key, value) {
-                    if(!hashtable_get(&key_set, key)) {
-                        if (!have_unrecognized_keys) {
-                            strbuffer_init(&unrecognized_keys);
-                            have_unrecognized_keys = 1;
-                        } else {
-                            strbuffer_append_bytes(&unrecognized_keys, ", ", 2);
-                        }
-                        strbuffer_append_bytes(&unrecognized_keys, key, strlen(key));
-                    }
-                }
-            }
-            set_error(s, "<validation>",
-                      "%li object item(s) left unpacked: %s",
-                      unpacked, strbuffer_value(&unrecognized_keys));
-            strbuffer_close(&unrecognized_keys);
-            goto out;
-        }
+    if(root && strict == 1 && key_set.size != json_object_size(root)) {
+        long diff = (long)json_object_size(root) - (long)key_set.size;
+        set_error(s, "<validation>", "%li object item(s) left unpacked", diff);
+        goto out;
     }
 
     ret = 0;
@@ -539,30 +331,30 @@ static int unpack_array(scanner_t *s, json_t *root, va_list *ap)
     }
     next_token(s);
 
-    while(token(s) != ']') {
+    while(s->token != ']') {
         json_t *value;
 
         if(strict != 0) {
             set_error(s, "<format>", "Expected ']' after '%c', got '%c'",
                       (strict == 1 ? '!' : '*'),
-                      token(s));
+                      s->token);
             return -1;
         }
 
-        if(!token(s)) {
+        if(!s->token) {
             set_error(s, "<format>", "Unexpected end of format string");
             return -1;
         }
 
-        if(token(s) == '!' || token(s) == '*') {
-            strict = (token(s) == '!' ? 1 : -1);
+        if(s->token == '!' || s->token == '*') {
+            strict = (s->token == '!' ? 1 : -1);
             next_token(s);
             continue;
         }
 
-        if(!strchr(unpack_value_starters, token(s))) {
+        if(!strchr(unpack_value_starters, s->token)) {
             set_error(s, "<format>", "Unexpected format character '%c'",
-                      token(s));
+                      s->token);
             return -1;
         }
 
@@ -600,7 +392,7 @@ static int unpack_array(scanner_t *s, json_t *root, va_list *ap)
 
 static int unpack(scanner_t *s, json_t *root, va_list *ap)
 {
-    switch(token(s))
+    switch(s->token)
     {
         case '{':
             return unpack_object(s, root, ap);
@@ -616,32 +408,16 @@ static int unpack(scanner_t *s, json_t *root, va_list *ap)
             }
 
             if(!(s->flags & JSON_VALIDATE_ONLY)) {
-                const char **str_target;
-                size_t *len_target = NULL;
+                const char **target;
 
-                str_target = va_arg(*ap, const char **);
-                if(!str_target) {
+                target = va_arg(*ap, const char **);
+                if(!target) {
                     set_error(s, "<args>", "NULL string argument");
                     return -1;
                 }
 
-                next_token(s);
-
-                if(token(s) == '%') {
-                    len_target = va_arg(*ap, size_t *);
-                    if(!len_target) {
-                        set_error(s, "<args>", "NULL string length argument");
-                        return -1;
-                    }
-                }
-                else
-                    prev_token(s);
-
-                if(root) {
-                    *str_target = json_string_value(root);
-                    if(len_target)
-                        *len_target = json_string_length(root);
-                }
+                if(root)
+                    *target = json_string_value(root);
             }
             return 0;
 
@@ -745,7 +521,7 @@ static int unpack(scanner_t *s, json_t *root, va_list *ap)
 
         default:
             set_error(s, "<format>", "Unexpected format character '%c'",
-                      token(s));
+                      s->token);
             return -1;
     }
 }
@@ -775,7 +551,7 @@ json_t *json_vpack_ex(json_error_t *error, size_t flags,
         return NULL;
 
     next_token(&s);
-    if(token(&s)) {
+    if(s.token) {
         json_decref(value);
         set_error(&s, "<format>", "Garbage after format string");
         return NULL;
@@ -838,7 +614,7 @@ int json_vunpack_ex(json_t *root, json_error_t *error, size_t flags,
     va_end(ap_copy);
 
     next_token(&s);
-    if(token(&s)) {
+    if(s.token) {
         set_error(&s, "<format>", "Garbage after format string");
         return -1;
     }
